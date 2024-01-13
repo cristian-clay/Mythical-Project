@@ -53,14 +53,12 @@
 #include "InstanceSaveMgr.h"
 #include "InstanceScript.h"
 #include "LFGMgr.h"
-#include "Language.h"
 #include "Log.h"
 #include "LootItemStorage.h"
 #include "MapMgr.h"
 #include "MiscPackets.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
-#include "Opcodes.h"
 #include "OutdoorPvP.h"
 #include "OutdoorPvPMgr.h"
 #include "Pet.h"
@@ -80,7 +78,6 @@
 #include "Tokenize.h"
 #include "Transport.h"
 #include "UpdateData.h"
-#include "UpdateFieldFlags.h"
 #include "Util.h"
 #include "Vehicle.h"
 #include "Weather.h"
@@ -1314,9 +1311,6 @@ void Player::SendTeleportAckPacket()
 
 bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientation, uint32 options /*= 0*/, Unit* target /*= nullptr*/, bool newInstance /*= false*/)
 {
-    // for except kick by antispeedhack
-    sScriptMgr->AnticheatSetSkipOnePacketForASH(this, true);
-
     if (!MapMgr::IsValidMapCoord(mapid, x, y, z, orientation))
     {
         LOG_ERROR("entities.player", "TeleportTo: invalid map ({}) or invalid coordinates (X: {}, Y: {}, Z: {}, O: {}) given when teleporting player ({}, name: {}, map: {}, X: {}, Y: {}, Z: {}, O: {}).",
@@ -2529,6 +2523,11 @@ void Player::GiveLevel(uint8 level)
     SendQuestGiverStatusMultiple();
 
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
+}
+
+bool Player::IsMaxLevel() const
+{
+    return GetLevel() >= GetUInt32Value(PLAYER_FIELD_MAX_LEVEL);
 }
 
 void Player::InitTalentForLevel()
@@ -4488,6 +4487,7 @@ void Player::KillPlayer()
     if (corpseReclaimDelay >= 0)
         SendCorpseReclaimDelay(corpseReclaimDelay);
 
+    sScriptMgr->OnPlayerJustDied(this);
     // don't create corpse at this moment, player might be falling
 
     // update visibility
@@ -9365,12 +9365,10 @@ void Player::Whisper(std::string_view text, Language language, Player* target, b
     }
 }
 
-void Player::Whisper(uint32 textId, Player* target, bool /*isBossWhisper = false*/)
+void Player::Whisper(uint32 textId, Player* target, bool isBossWhisper)
 {
     if (!target)
-    {
         return;
-    }
 
     BroadcastText const* bct = sObjectMgr->GetBroadcastText(textId);
     if (!bct)
@@ -9381,7 +9379,10 @@ void Player::Whisper(uint32 textId, Player* target, bool /*isBossWhisper = false
 
     LocaleConstant locale = target->GetSession()->GetSessionDbLocaleIndex();
     WorldPacket data;
-    ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_UNIVERSAL, this, target, bct->GetText(locale, getGender()), 0, "", locale);
+    if (isBossWhisper)
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_RAID_BOSS_WHISPER, LANG_UNIVERSAL, this, target, bct->GetText(locale, getGender()), 0, "", locale);
+    else
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_UNIVERSAL, this, target, bct->GetText(locale, getGender()), 0, "", locale);
     target->SendDirectMessage(&data);
 }
 
@@ -14184,24 +14185,21 @@ void Player::ResummonPetTemporaryUnSummonedIfAny()
 
 bool Player::CanResummonPet(uint32 spellid)
 {
-    switch (getClass())
+    if (getClass() == CLASS_DEATH_KNIGHT)
     {
-        case CLASS_DEATH_KNIGHT:
-            if (CanSeeDKPet())
-                return true;
-            else if (spellid == 52150)  //Raise Dead
-                return false;
-            break;
-        case CLASS_MAGE:
-            if (HasSpell(31687) && HasAura(70937))  //Has [Summon Water Elemental] spell and [Glyph of Eternal Water].
-                return true;
-            break;
-        case CLASS_HUNTER:
-        case CLASS_WARLOCK:
+        if (CanSeeDKPet())
             return true;
-            break;
-        default:
-            break;
+        else if (spellid == 52150) // Raise Dead
+            return false;
+    }
+    else if (getClass() == CLASS_MAGE)
+    {
+        if (HasSpell(31687) && HasAura(70937))  //Has [Summon Water Elemental] spell and [Glyph of Eternal Water].
+            return true;
+    }
+    else if (getClass() == CLASS_HUNTER)
+    {
+        return true;
     }
 
     return HasSpell(spellid);
